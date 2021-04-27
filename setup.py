@@ -26,7 +26,7 @@ if not shutil.which('pandoc'):
 
 setup(
     name="Redmine-zulip",
-    version=find_version("redmine-zulip", "__init__.py"),
+    version=find_version("redmine_zulip", "__init__.py"),
     author="Thomas Michelat",
     author_email="thomas.michelat@gmail.com",
     maintainer="Thomas Michelat",
@@ -34,6 +34,12 @@ setup(
     description=("Publish Redmine issues to Zulip"),
     long_description=read("README.md"),
     license="BSD-3-Clause",
+    entry_points={
+        "console_scripts": [
+            "redmine-zulip-publisher = redmine_zulip.redmine:main",
+        ],
+    },
+
     python_requires='>=3.7',
     install_requires=[
         'atoma',

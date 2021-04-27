@@ -1,0 +1,21 @@
+[DATABASE]
+# sqlite3 database file
+sql3_file = 'sqlite:///redmine-publisher.db'
+
+[REDMINE]
+# redmine url
+url = ''
+# project
+project = ''
+# redmine access token
+token = ''
+# redmine rss feed for new tasks assigned to exfl_da
+rss_feed = ''
+
+[ZULIP]
+# zulip stream to publish tickets
+stream = ''
+# configuration file for the zulip bot: publish new messages
+bot = ''
+# configuration file for zulip admin: move topic (update ticket status)
+admin = ''
