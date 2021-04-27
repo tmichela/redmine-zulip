@@ -165,7 +165,7 @@ class Publisher:
             if not journal.notes:
                 continue
 
-            url = f'{Redmine.url}/issues/{issue["task_id"]}#change-{journal.id}'
+            url = f'{self.redmine.remote.url}/issues/{issue["task_id"]}#change-{journal.id}'
             msg = (
                 f'**{journal.user.name}** [said]({url}):\n'
                 f'```quote\n{textile_to_md(journal.notes)}\n```'
