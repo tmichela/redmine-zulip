@@ -9,7 +9,7 @@ published in the topic.
 
 Example: ![](doc/_static/zulip-redmine.png)
 
-# installation
+# Installation
 
 to install the package:
 
@@ -21,7 +21,7 @@ $ python3 -m pip install ./redmine-zulip
 # Usage
 
 
-```ipython
+```python
 from redmine_zulip import Publisher
 publisher = Publisher('~/configuration.toml')
 # check rss url for new issues
