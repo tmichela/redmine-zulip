@@ -1,0 +1,2 @@
+[build-system]
+requires = ["pypandoc", "setuptools>=40.8.0", "wheel"]
