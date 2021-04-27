@@ -16,7 +16,7 @@ import toml
 import zulip
 
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
 def textile_to_md(text):
@@ -25,7 +25,7 @@ def textile_to_md(text):
 
 
 def indent(text, offset=3):
-    """Indent text with offet * 4 blank spaces
+    """Indent text with offset * 4 blank spaces
     """
     def indented_lines():
         for ix, line in enumerate(text.splitlines(True)):
@@ -97,7 +97,7 @@ class Publisher:
             info['journals'] = str([])
             info['updated'] = datetime.now()
 
-            logger.info('INSERT new task:\n%s', info)
+            log.info('INSERT new task:\n%s', info)
 
             # write issue (+ journals) to zulip
             self._publish_issue(info, issue.description)
@@ -137,7 +137,7 @@ class Publisher:
         """Get issues from rss url"""
         r = requests.get(self.feed)
         if r.status_code != requests.codes.ok:
-            logger.debug(f'{r.status_code} Error: {r.reason} for url: {self.feed}')
+            log.debug(f'{r.status_code} Error: {r.reason} for url: {self.feed}')
             return []
 
         return atoma.parse_atom_bytes(r.content).entries
@@ -222,7 +222,7 @@ class Publisher:
         """
         f = self.redmine.remote.file.get(attachment.id)
         fpath = f.download(savepath='/tmp/')
-        logger.info("Redmine download file to: %s", fpath)
+        log.info("Redmine download file to: %s", fpath)
 
         with open(fpath, 'rb') as f:
             # upload image to zulip
@@ -232,7 +232,7 @@ class Publisher:
                 files=[f],
             )
         if result['result'] != 'success':
-            logger.info("Failed uploading file to zulip:\n%s", result)
+            log.info("Failed uploading file to zulip:\n%s", result)
             return {'uri': None}
 
         return result
@@ -244,7 +244,7 @@ class Publisher:
             "topic": f'Issue #{issue["task_id"]} - {issue["status_name"]}',
             "content": content
         })
-        logger.info("%s", reply)
+        log.info("%s", reply)
 
     def _update_status(self, issue, ticket):
         """Update the issue state in the zulip topic name
@@ -270,11 +270,11 @@ class Publisher:
                 notify_old_topic=False,
                 notify_new_topic=False
             )
-            logger.info('Update status for issue #%s: %s -> %s',
+            log.info('Update status for issue #%s: %s -> %s',
                         issue["task_id"],
                         issue["status_name"],
                         ticket.status.name)
-            logger.info('%s', res)
+            log.info('%s', res)
 
             # update DB entry
             data = {'task_id': ticket.id,
@@ -288,8 +288,8 @@ def main(argv=None):
     ap = ArgumentParser('redmine-zulip-publisher',
                         description='Publish Redmine issues to Zulip')
     ap.add_argument('config', help='toml configuration file')
-
     args = ap.parse_args()
+
     publisher = Publisher(args.config)
     publisher.poll()
     publisher.track()
