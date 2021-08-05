@@ -1,10 +1,14 @@
 from argparse import ArgumentParser
 from datetime import datetime
+from functools import lru_cache, partial, wraps
 import logging
+from multiprocessing.dummy import Pool
 from pathlib import Path
 import re
 import requests
 from textwrap import dedent
+from threading import Lock
+from time import sleep
 from typing import Union
 
 import atoma
@@ -16,11 +20,14 @@ import toml
 import zulip
 
 
+RESOLVED_TOPIC_PREFIX = b'\xe2\x9c\x94 '.decode('utf8')  # '✔ '
+
+
 log = logging.getLogger(__name__)
 
 
 def textile_to_md(text):
-    text = pandoc.convert_text(text, to='gfm', format='textile')
+    text = pandoc.convert_text(text, to='markdown_github', format='textile')
     return re.sub(r'\\(.)', r'\1', text)
 
 
@@ -34,6 +41,35 @@ def indent(text, offset=3):
             else:
                 yield '    ' * offset + line if line.strip() else line
     return ''.join(indented_lines())
+
+
+def retry(func=None, *, attempts=1, delay=0, exc=(Exception,)):
+    """Re-execute decorated function.
+    :attemps int: number of tries, default 1
+    :delay float: timeout between each tries in seconds, default 0
+    :exc tuple: collection of exceptions to be caugth
+    """
+    if func is None:
+        return partial(retry, attempts=attempts, delay=delay, exc=exc)
+
+    @wraps(func)
+    def retried(*args, **kwargs):
+        retry._tries[func.__name__] = 0
+        for i in reversed(range(attempts)):
+            retry._tries[func.__name__] += 1
+            try:
+                ret = func(*args, *kwargs)
+            except exc:
+                if i <= 0:
+                    raise
+                sleep(delay)
+                continue
+            else:
+                break
+        return ret
+
+    retry._tries = {}
+    return retried
 
 
 class Redmine:
@@ -55,8 +91,10 @@ class Publisher:
             toml configuration file
         """
         conf = toml.load(configuration)
-        self._db = dataset.connect(conf['DATABASE']['sql3_file'])
+        self.db_path = conf['DATABASE']['sql3_file']
+        self._db = dataset.connect(self.db_path, engine_kwargs={"connect_args": {"check_same_thread": False}})
         self.issues = self._db['issues']
+        self.lock = Lock()
 
         self.zulip = zulip.Client(config_file=conf['ZULIP']['bot'])
         self.zulip_admin = zulip.Client(config_file=conf['ZULIP']['admin'])
@@ -77,10 +115,11 @@ class Publisher:
         # get new issues
         issues = self._get_feed()
 
-        for issue in issues:
+        for n, issue in enumerate(issues):
             # publish and track
             url = issue.id_
 
+            print(f'issue {n}/{len(issues)}: {issue.title.value}')
             if self.issues.find_one(url=url):
                 continue  # issue already tracked
 
@@ -109,29 +148,39 @@ class Publisher:
 
         For each ticket tracked in our database, publish new messages and attachments
         """
-        for issue in self.issues:
-            ticket = self.redmine.get(issue['task_id'])
+        Pool().map(self._track, [(n, issue) for n, issue in enumerate(self.issues)])
 
-            # check for new journal and attachments: add message per entry
-            self._publish_journal(issue, ticket)
-            self._publish_attachment(issue, ticket)
+    def _track(self, data):
+        n, issue = data
 
-            if ticket.status.id != issue['status_id']:
-                # check for status: update the topic title
-                self._update_status(issue, ticket)
-                issue = self.issues.find_one(task_id=issue['task_id'])
+        db = dataset.connect(self.db_path)
+        issues = db['issues']
 
-            # close ticket
-            last_update = issue.get('updated')
-            if last_update is None:
-                last_update = datetime.now()
-                data = {'task_id': issue['task_id'],
-                        'updated': last_update}
-                self.issues.update(data, ['task_id'])
+        print(f'{n}/{len(issues)} - {issue}')
+        ticket = self.redmine.get(issue['task_id'])
 
-            if ticket.status.name == 'Closed' and (datetime.now() - last_update).days >= 7:
-                # ticket is closed, remove from DB
-                self.issues.delete(task_id=ticket.id)
+        # check for new journal and attachments: add message per entry
+        self._publish_journal(issue, ticket)
+        self._publish_attachment(issue, ticket)
+
+        if ticket.status.id != issue['status_id']:
+            # check for status: update the topic title
+            self._update_status(issue, ticket)
+            issue = issues.find_one(task_id=issue['task_id'])
+
+        # close ticket
+        last_update = issue.get('updated')
+        if last_update is None:
+            last_update = datetime.now()
+            data = {'task_id': issue['task_id'],
+                    'updated': last_update}
+            issues.update(data, ['task_id'])
+
+        print(datetime.now(), last_update)
+        print((datetime.now() - last_update).days, ticket.status.name)
+        if ticket.status.name == 'Closed' and (datetime.now() - last_update).days >= 7:
+            # ticket is closed, remove from DB
+            issues.delete(task_id=ticket.id)
 
     def _get_feed(self):
         """Get issues from rss url"""
@@ -152,6 +201,7 @@ class Publisher:
 
         self.send(issue, content)
         # update database
+        print(issue)
         self.issues.insert(issue)
 
     def _publish_journal(self, issue, ticket):
@@ -173,6 +223,10 @@ class Publisher:
             self.send(issue, msg)
 
             new_entries.append(journal.id)
+       
+        if not new_entries:
+            return
+
         known_entries += new_entries
 
         # update DB entry
@@ -206,6 +260,10 @@ class Publisher:
             self.send(issue, msg)
 
             new_attachments.append(attachment.id)
+
+        if not new_attachments:
+            return
+
         known_attachments += new_attachments
         # update database
         data = {
@@ -246,6 +304,13 @@ class Publisher:
         })
         log.info("%s", reply)
 
+    @lru_cache()
+    @retry(attempts=10)
+    def zulip_topics(self):
+        stream = self.zulip.get_stream_id(self.stream)
+        stream = self.zulip.get_stream_topics(stream['stream_id'])
+        return stream['topics']
+
     def _update_status(self, issue, ticket):
         """Update the issue state in the zulip topic name
 
@@ -253,9 +318,8 @@ class Publisher:
         this requires a client with admin right.
         """
         # legacy: check existing topics
-        reply = self.zulip.get_stream_id(self.stream)
         old_topic = f'Issue #{issue["task_id"]}'
-        for topic in self.zulip.get_stream_topics(reply['stream_id'])['topics']:
+        for topic in self.zulip_topics():
             if topic['name'] == old_topic:
                 break
         else:
@@ -276,6 +340,10 @@ class Publisher:
                         ticket.status.name)
             log.info('%s', res)
 
+            if ticket.status.name == 'Closed':
+                pass
+                # TODO update topic resolution
+
             # update DB entry
             data = {'task_id': ticket.id,
                     'status_id': ticket.status.id,
@@ -285,6 +353,9 @@ class Publisher:
 
 
 def main(argv=None):
+    import os
+    os.environ.setdefault('PYPANDOC_PANDOC', '/usr/bin/pandoc')
+
     ap = ArgumentParser('redmine-zulip-publisher',
                         description='Publish Redmine issues to Zulip')
     ap.add_argument('config', help='toml configuration file')
