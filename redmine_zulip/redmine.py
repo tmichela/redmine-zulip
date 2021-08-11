@@ -1,11 +1,9 @@
 from argparse import ArgumentParser
 from datetime import datetime
 from functools import lru_cache, partial, wraps
-import logging
 from multiprocessing.dummy import Pool
 from pathlib import Path
 import re
-from types import resolve_bases
 import requests
 from textwrap import dedent
 from threading import Lock
@@ -14,6 +12,7 @@ from typing import Union
 
 import atoma
 import dataset
+from loguru import logger as log
 import pypandoc as pandoc
 from redminelib import Redmine as RedmineLib
 from redminelib.resources.standard import Issue
@@ -21,10 +20,7 @@ import toml
 import zulip
 
 
-RESOLVED_TOPIC_PREFIX = b'\xe2\x9c\x94 '.decode('utf8')  # '✔ '
-
-
-log = logging.getLogger(__name__)
+RESOLVED_TOPIC_PREFIX = b'\xe2\x9c\x94 '.decode('utf8')  # = '✔ '
 
 
 def textile_to_md(text):
@@ -96,6 +92,11 @@ class Publisher:
             toml configuration file
         """
         conf = toml.load(configuration)
+
+        # logging
+        log.add(conf['LOGGING']['file'])
+
+        # database connection
         self.db_path = conf['DATABASE']['sql3_file']
         self._db = dataset.connect(self.db_path, engine_kwargs={"connect_args": {"check_same_thread": False}})
         self.issues = self._db['issues']
@@ -107,6 +108,12 @@ class Publisher:
 
         self.redmine = Redmine(conf['REDMINE'])
         self.feed = conf['REDMINE']['rss_feed']
+
+    def run(self):
+        log.info('Polling Redmine for new tasks')
+        self.poll()
+        self.track()
+        log.info('done.')
 
     def poll(self):
         """Read issues from ``self.feed`` and add new ones to our local db
@@ -124,7 +131,6 @@ class Publisher:
             # publish and track
             url = issue.id_
 
-            print(f'issue {n}/{len(issues)}: {issue.title.value}')
             if self.issues.find_one(url=url):
                 continue  # issue already tracked
 
@@ -153,6 +159,7 @@ class Publisher:
 
         For each ticket tracked in our database, publish new messages and attachments
         """
+        log.info(f'tracking {len(self.issues)} issues')
         Pool().map(self._track, [(n, issue) for n, issue in enumerate(self.issues)])
 
     def _track(self, data):
@@ -161,7 +168,7 @@ class Publisher:
         db = dataset.connect(self.db_path)
         issues = db['issues']
 
-        print(f'{n}/{len(issues)} - {issue}')
+        # log.debug(f'{n}/{len(issues)} - {issue}')
         ticket = self.redmine.get(issue['task_id'])
 
         # check for new journal and attachments: add message per entry
@@ -183,10 +190,9 @@ class Publisher:
                     'updated': last_update}
             issues.update(data, ['task_id'])
 
-        print(datetime.now(), last_update)
-        print((datetime.now() - last_update).days, ticket.status.name)
         if ticket.status.name == 'Closed' and (datetime.now() - last_update).days >= 7:
             # ticket is closed, remove from DB
+            log.info(f'ticket {ticket.id} closed and inactive for more than 7 days, stop tracking')
             issues.delete(task_id=ticket.id)
 
     def _get_feed(self):
@@ -208,7 +214,6 @@ class Publisher:
 
         self.send(issue, content)
         # update database
-        print(issue)
         self.issues.insert(issue)
 
     def _publish_journal(self, issue, ticket):
@@ -374,6 +379,7 @@ class Publisher:
                     'send_notification_to_old_thread': False,
                     # 'send_notification_to_new_thread': False,
                 })
+                log.info(f'resolved: {title}')
                 break
 
 
@@ -387,5 +393,4 @@ def main(argv=None):
     args = ap.parse_args()
 
     publisher = Publisher(args.config)
-    publisher.poll()
-    publisher.track()
+    publisher.run()
