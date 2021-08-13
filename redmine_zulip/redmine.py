@@ -352,11 +352,8 @@ class Publisher:
                 notify_old_topic=False,
                 notify_new_topic=False
             )
-            log.info('Update status for issue #%s: %s -> %s',
-                     issue["task_id"],
-                     issue["status_name"],
-                     ticket.status.name)
-            log.info('%s', res)
+            log.info(f'Update status for issue #{issue["task_id"]}: {issue["status_name"]} -> {ticket.status.name}')
+            log.info(res)
 
             # update DB entry
             data = {'task_id': ticket.id,
