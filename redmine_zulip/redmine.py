@@ -1,7 +1,6 @@
 from argparse import ArgumentParser
 from datetime import datetime
 from functools import lru_cache, partial, wraps
-import logging
 from multiprocessing.dummy import Pool
 from pathlib import Path
 import re
@@ -13,6 +12,7 @@ from typing import Union
 
 import atoma
 import dataset
+from loguru import logger as log
 import pypandoc as pandoc
 from redminelib import Redmine as RedmineLib
 from redminelib.resources.standard import Issue
@@ -20,10 +20,7 @@ import toml
 import zulip
 
 
-RESOLVED_TOPIC_PREFIX = b'\xe2\x9c\x94 '.decode('utf8')  # '✔ '
-
-
-log = logging.getLogger(__name__)
+RESOLVED_TOPIC_PREFIX = b'\xe2\x9c\x94 '.decode('utf8')  # = '✔ '
 
 
 def textile_to_md(text):
@@ -72,6 +69,10 @@ def retry(func=None, *, attempts=1, delay=0, exc=(Exception,)):
     return retried
 
 
+def format_topic(issue: dict) -> str:
+    return f'Issue #{issue["task_id"]} - {issue["status_name"]}'
+
+
 class Redmine:
     def __init__(self, conf):
         self.remote = RedmineLib(conf['url'], key=conf['token'])
@@ -91,6 +92,11 @@ class Publisher:
             toml configuration file
         """
         conf = toml.load(configuration)
+
+        # logging
+        log.add(conf['LOGGING']['file'])
+
+        # database connection
         self.db_path = conf['DATABASE']['sql3_file']
         self._db = dataset.connect(self.db_path, engine_kwargs={"connect_args": {"check_same_thread": False}})
         self.issues = self._db['issues']
@@ -102,6 +108,12 @@ class Publisher:
 
         self.redmine = Redmine(conf['REDMINE'])
         self.feed = conf['REDMINE']['rss_feed']
+
+    def run(self):
+        log.info('Polling Redmine for new tasks')
+        self.poll()
+        self.track()
+        log.info('done.')
 
     def poll(self):
         """Read issues from ``self.feed`` and add new ones to our local db
@@ -119,7 +131,6 @@ class Publisher:
             # publish and track
             url = issue.id_
 
-            print(f'issue {n}/{len(issues)}: {issue.title.value}')
             if self.issues.find_one(url=url):
                 continue  # issue already tracked
 
@@ -148,6 +159,7 @@ class Publisher:
 
         For each ticket tracked in our database, publish new messages and attachments
         """
+        log.info(f'tracking {len(self.issues)} issues')
         Pool().map(self._track, [(n, issue) for n, issue in enumerate(self.issues)])
 
     def _track(self, data):
@@ -156,7 +168,7 @@ class Publisher:
         db = dataset.connect(self.db_path)
         issues = db['issues']
 
-        print(f'{n}/{len(issues)} - {issue}')
+        # log.debug(f'{n}/{len(issues)} - {issue}')
         ticket = self.redmine.get(issue['task_id'])
 
         # check for new journal and attachments: add message per entry
@@ -168,6 +180,8 @@ class Publisher:
             self._update_status(issue, ticket)
             issue = issues.find_one(task_id=issue['task_id'])
 
+        self._maybe_resolve_topic(issue)
+
         # close ticket
         last_update = issue.get('updated')
         if last_update is None:
@@ -176,10 +190,9 @@ class Publisher:
                     'updated': last_update}
             issues.update(data, ['task_id'])
 
-        print(datetime.now(), last_update)
-        print((datetime.now() - last_update).days, ticket.status.name)
         if ticket.status.name == 'Closed' and (datetime.now() - last_update).days >= 7:
             # ticket is closed, remove from DB
+            log.info(f'ticket {ticket.id} closed and inactive for more than 7 days, stop tracking')
             issues.delete(task_id=ticket.id)
 
     def _get_feed(self):
@@ -201,7 +214,6 @@ class Publisher:
 
         self.send(issue, content)
         # update database
-        print(issue)
         self.issues.insert(issue)
 
     def _publish_journal(self, issue, ticket):
@@ -296,10 +308,14 @@ class Publisher:
         return result
 
     def send(self, issue, content):
+        topic = format_topic(issue)
+        if f'{RESOLVED_TOPIC_PREFIX}{topic}' in self.zulip_topic_names():
+            topic = f'{RESOLVED_TOPIC_PREFIX}{topic}'
+
         reply = self.zulip.send_message({
             "type": "stream",
             "to": self.stream,
-            "topic": f'Issue #{issue["task_id"]} - {issue["status_name"]}',
+            "topic": topic,
             "content": content
         })
         log.info("%s", reply)
@@ -309,7 +325,10 @@ class Publisher:
     def zulip_topics(self):
         stream = self.zulip.get_stream_id(self.stream)
         stream = self.zulip.get_stream_topics(stream['stream_id'])
-        return stream['topics']
+        return [s for s in stream['topics']]
+
+    def zulip_topic_names(self):
+        return {s['name'] for s in self.zulip_topics()}
 
     def _update_status(self, issue, ticket):
         """Update the issue state in the zulip topic name
@@ -317,32 +336,27 @@ class Publisher:
         note: changing a topic name means effectively moving messages to a new topic,
         this requires a client with admin right.
         """
-        # legacy: check existing topics
-        old_topic = f'Issue #{issue["task_id"]}'
-        for topic in self.zulip_topics():
-            if topic['name'] == old_topic:
-                break
-        else:
-            old_topic = f'{old_topic} - {issue["status_name"]}'
-
         if ticket.status.name != issue['status_name']:
+            # legacy: check existing topics
+            old_topic = f'Issue #{issue["task_id"]}'
+            if old_topic not in self.zulip_topic_names():
+                old_topic = f'{old_topic} - {issue["status_name"]}'
+
+            new_topic = f'Issue #{issue["task_id"]} - {ticket.status.name}'
+
             # rename zulip topic for the issue with the new status
             res = self.zulip_admin.move_topic(
                 self.stream, self.stream,
                 old_topic,
-                f'Issue #{issue["task_id"]} - {ticket.status.name}',
+                new_topic,
                 notify_old_topic=False,
                 notify_new_topic=False
             )
             log.info('Update status for issue #%s: %s -> %s',
-                        issue["task_id"],
-                        issue["status_name"],
-                        ticket.status.name)
+                     issue["task_id"],
+                     issue["status_name"],
+                     ticket.status.name)
             log.info('%s', res)
-
-            if ticket.status.name == 'Closed':
-                pass
-                # TODO update topic resolution
 
             # update DB entry
             data = {'task_id': ticket.id,
@@ -350,6 +364,23 @@ class Publisher:
                     'status_name': ticket.status.name,
                     'updated': datetime.now()}
             self.issues.update(data, ['task_id'])
+
+    def _maybe_resolve_topic(self, issue):
+        if issue['status_name'] != 'Closed':
+            return
+
+        title = format_topic(issue)
+        for topic in self.zulip_topics():
+            if topic['name'] == title:
+                self.zulip.update_message({
+                    'message_id': topic['max_id'],
+                    'topic': f'{RESOLVED_TOPIC_PREFIX}{title}',
+                    'propagate_mode': 'change_all',
+                    'send_notification_to_old_thread': False,
+                    # 'send_notification_to_new_thread': False,
+                })
+                log.info(f'resolved: {title}')
+                break
 
 
 def main(argv=None):
@@ -362,5 +393,4 @@ def main(argv=None):
     args = ap.parse_args()
 
     publisher = Publisher(args.config)
-    publisher.poll()
-    publisher.track()
+    publisher.run()
