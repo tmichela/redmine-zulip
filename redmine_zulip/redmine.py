@@ -1,87 +1,25 @@
 from argparse import ArgumentParser
 from datetime import datetime
-from functools import lru_cache, partial, wraps
+from functools import lru_cache
 from multiprocessing.dummy import Pool
 from pathlib import Path
-import re
 import requests
 from textwrap import dedent
 from threading import Lock
-from time import sleep
-from typing import Union
+from typing import Dict, List, Set, Union
 
 import atoma
+from atoma.atom import AtomEntry
 import dataset
 from loguru import logger as log
-import pypandoc as pandoc
-from redminelib import Redmine as RedmineLib
-from redminelib.resources.standard import Issue
+from redminelib import Redmine
 import toml
 import zulip
 
+from .utils import indent, textile_to_md
+
 
 RESOLVED_TOPIC_PREFIX = b'\xe2\x9c\x94 '.decode('utf8')  # = '✔ '
-
-
-def textile_to_md(text):
-    text = pandoc.convert_text(text, to='markdown_github', format='textile')
-    return re.sub(r'\\(.)', r'\1', text)
-
-
-def indent(text, offset=3):
-    """Indent text with offset * 4 blank spaces
-    """
-    def indented_lines():
-        for ix, line in enumerate(text.splitlines(True)):
-            if ix == 0:
-                yield line
-            else:
-                yield '    ' * offset + line if line.strip() else line
-    return ''.join(indented_lines())
-
-
-def retry(func=None, *, attempts=1, delay=0, exc=(Exception,)):
-    """Re-execute decorated function.
-    :attemps int: number of tries, default 1
-    :delay float: timeout between each tries in seconds, default 0
-    :exc tuple: collection of exceptions to be caugth
-    """
-    if func is None:
-        return partial(retry, attempts=attempts, delay=delay, exc=exc)
-
-    @wraps(func)
-    def retried(*args, **kwargs):
-        retry._tries[func.__name__] = 0
-        for i in reversed(range(attempts)):
-            retry._tries[func.__name__] += 1
-            try:
-                ret = func(*args, *kwargs)
-            except exc:
-                if i <= 0:
-                    raise
-                sleep(delay)
-                continue
-            else:
-                break
-        return ret
-
-    retry._tries = {}
-    return retried
-
-
-def format_topic(issue: dict) -> str:
-    return f'Issue #{issue["task_id"]} - {issue["status_name"]}'
-
-
-class Redmine:
-    def __init__(self, conf):
-        self.remote = RedmineLib(conf['url'], key=conf['token'])
-        self.project = self.remote.project.get(conf['project'])
-
-    def get(self, issue: int) -> Issue:
-        """Get a redmine issue from it's ID
-        """
-        return self.remote.issue.get(issue)
 
 
 class Publisher:
@@ -94,11 +32,13 @@ class Publisher:
         conf = toml.load(configuration)
 
         # logging
-        log.add(conf['LOGGING']['file'])
+        if conf['LOGGING'].get('file'):
+            log.add(conf['LOGGING']['file'])
 
         # database connection
-        self.db_path = conf['DATABASE']['sql3_file']
-        self._db = dataset.connect(self.db_path, engine_kwargs={"connect_args": {"check_same_thread": False}})
+        db_path = conf['DATABASE']['sql3_file']
+        self._db = dataset.connect(
+            db_path, engine_kwargs={"connect_args": {"check_same_thread": False}})
         self.issues = self._db['issues']
         self.lock = Lock()
 
@@ -106,8 +46,12 @@ class Publisher:
         self.zulip_admin = zulip.Client(config_file=conf['ZULIP']['admin'])
         self.stream = conf['ZULIP']['stream']
 
-        self.redmine = Redmine(conf['REDMINE'])
+        self.redmine = Redmine(conf['REDMINE']['url'], key=conf['REDMINE']['token'])
         self.feed = conf['REDMINE']['rss_feed']
+
+    @staticmethod
+    def format_topic(issue: dict) -> str:
+        return f'Issue #{issue["task_id"]} - {issue["status_name"]}'
 
     def run(self):
         log.info('Polling Redmine for new tasks')
@@ -140,7 +84,7 @@ class Publisher:
                 'author': issue.authors[0].name,
                 'title': issue.title.value,
             }
-            issue = self.redmine.get(info['task_id'])
+            issue = self.redmine.issue.get(info['task_id'])
             assert issue.id == info['task_id']
             info['status_name'] = issue.status.name
             info['status_id'] = issue.status.id
@@ -165,11 +109,8 @@ class Publisher:
     def _track(self, data):
         n, issue = data
 
-        db = dataset.connect(self.db_path)
-        issues = db['issues']
-
-        # log.debug(f'{n}/{len(issues)} - {issue}')
-        ticket = self.redmine.get(issue['task_id'])
+        # log.debug(f'{n}/{len(self.issues)} - {issue}')
+        ticket = self.redmine.issue.get(issue['task_id'])
 
         # check for new journal and attachments: add message per entry
         self._publish_journal(issue, ticket)
@@ -178,7 +119,7 @@ class Publisher:
         if ticket.status.id != issue['status_id']:
             # check for status: update the topic title
             self._update_status(issue, ticket)
-            issue = issues.find_one(task_id=issue['task_id'])
+            issue = self.issues.find_one(task_id=issue['task_id'])
 
         self._maybe_resolve_topic(issue)
 
@@ -188,14 +129,16 @@ class Publisher:
             last_update = datetime.now()
             data = {'task_id': issue['task_id'],
                     'updated': last_update}
-            issues.update(data, ['task_id'])
+            with self.lock:
+                self.issues.update(data, ['task_id'])
 
         if ticket.status.name == 'Closed' and (datetime.now() - last_update).days >= 7:
             # ticket is closed, remove from DB
             log.info(f'ticket {ticket.id} closed and inactive for more than 7 days, stop tracking')
-            issues.delete(task_id=ticket.id)
+            with self.lock:
+                self.issues.delete(task_id=ticket.id)
 
-    def _get_feed(self):
+    def _get_feed(self) -> List[AtomEntry]:
         """Get issues from rss url"""
         r = requests.get(self.feed)
         if r.status_code != requests.codes.ok:
@@ -227,7 +170,7 @@ class Publisher:
             if not journal.notes:
                 continue
 
-            url = f'{self.redmine.remote.url}/issues/{issue["task_id"]}#change-{journal.id}'
+            url = f'{self.redmine.url}/issues/{issue["task_id"]}#change-{journal.id}'
             msg = (
                 f'**{journal.user.name}** [said]({url}):\n'
                 f'```quote\n{textile_to_md(journal.notes)}\n```'
@@ -247,7 +190,8 @@ class Publisher:
             'journals': str([e for e in sorted(known_entries)]),
             'updated': datetime.now()
         }
-        self.issues.update(data, ['task_id'])
+        with self.lock:
+            self.issues.update(data, ['task_id'])
 
     def _publish_attachment(self, issue, ticket):
         known_attachments = eval(issue.get('attachments', '[]') or '[]')
@@ -283,14 +227,15 @@ class Publisher:
             'attachments': str([e for e in sorted(known_attachments)]),
             'updated': datetime.now()
         }
-        self.issues.update(data, ['task_id'])
+        with self.lock:
+            self.issues.update(data, ['task_id'])
 
     def upload_attachment(self, attachment):
         """Download attachment from Redmine and upload it on Zulip
 
         only publish images, other attachments are links to redmine
         """
-        f = self.redmine.remote.file.get(attachment.id)
+        f = self.redmine.file.get(attachment.id)
         fpath = f.download(savepath='/tmp/')
         log.info("Redmine download file to: %s", fpath)
 
@@ -308,7 +253,7 @@ class Publisher:
         return result
 
     def send(self, issue, content):
-        topic = format_topic(issue)
+        topic = self.format_topic(issue)
         if f'{RESOLVED_TOPIC_PREFIX}{topic}' in self.zulip_topic_names():
             topic = f'{RESOLVED_TOPIC_PREFIX}{topic}'
 
@@ -321,13 +266,12 @@ class Publisher:
         log.info("%s", reply)
 
     @lru_cache()
-    @retry(attempts=10)
-    def zulip_topics(self):
+    def zulip_topics(self) -> List[Dict]:
         stream = self.zulip.get_stream_id(self.stream)
         stream = self.zulip.get_stream_topics(stream['stream_id'])
         return [s for s in stream['topics']]
 
-    def zulip_topic_names(self):
+    def zulip_topic_names(self) -> Set[str]:
         return {s['name'] for s in self.zulip_topics()}
 
     def _update_status(self, issue, ticket):
@@ -352,24 +296,22 @@ class Publisher:
                 notify_old_topic=False,
                 notify_new_topic=False
             )
-            log.info('Update status for issue #%s: %s -> %s',
-                     issue["task_id"],
-                     issue["status_name"],
-                     ticket.status.name)
-            log.info('%s', res)
+            log.info(f'Update status for issue #{issue["task_id"]}: {issue["status_name"]} -> {ticket.status.name}')
+            log.info(res)
 
             # update DB entry
             data = {'task_id': ticket.id,
                     'status_id': ticket.status.id,
                     'status_name': ticket.status.name,
                     'updated': datetime.now()}
-            self.issues.update(data, ['task_id'])
+            with self.lock:
+                self.issues.update(data, ['task_id'])
 
     def _maybe_resolve_topic(self, issue):
         if issue['status_name'] != 'Closed':
             return
 
-        title = format_topic(issue)
+        title = self.format_topic(issue)
         for topic in self.zulip_topics():
             if topic['name'] == title:
                 self.zulip.update_message({
