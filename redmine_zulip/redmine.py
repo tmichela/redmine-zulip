@@ -6,9 +6,10 @@ from pathlib import Path
 import requests
 from textwrap import dedent
 from threading import Lock
-from typing import Union
+from typing import Dict, List, Set, Union
 
 import atoma
+from atoma.atom import AtomEntry
 import dataset
 from loguru import logger as log
 from redminelib import Redmine
@@ -35,8 +36,9 @@ class Publisher:
             log.add(conf['LOGGING']['file'])
 
         # database connection
-        self.db_path = conf['DATABASE']['sql3_file']
-        self._db = dataset.connect(self.db_path, engine_kwargs={"connect_args": {"check_same_thread": False}})
+        db_path = conf['DATABASE']['sql3_file']
+        self._db = dataset.connect(
+            db_path, engine_kwargs={"connect_args": {"check_same_thread": False}})
         self.issues = self._db['issues']
         self.lock = Lock()
 
@@ -107,10 +109,7 @@ class Publisher:
     def _track(self, data):
         n, issue = data
 
-        db = dataset.connect(self.db_path)
-        issues = db['issues']
-
-        # log.debug(f'{n}/{len(issues)} - {issue}')
+        # log.debug(f'{n}/{len(self.issues)} - {issue}')
         ticket = self.redmine.issue.get(issue['task_id'])
 
         # check for new journal and attachments: add message per entry
@@ -120,7 +119,7 @@ class Publisher:
         if ticket.status.id != issue['status_id']:
             # check for status: update the topic title
             self._update_status(issue, ticket)
-            issue = issues.find_one(task_id=issue['task_id'])
+            issue = self.issues.find_one(task_id=issue['task_id'])
 
         self._maybe_resolve_topic(issue)
 
@@ -130,14 +129,16 @@ class Publisher:
             last_update = datetime.now()
             data = {'task_id': issue['task_id'],
                     'updated': last_update}
-            issues.update(data, ['task_id'])
+            with self.lock:
+                self.issues.update(data, ['task_id'])
 
         if ticket.status.name == 'Closed' and (datetime.now() - last_update).days >= 7:
             # ticket is closed, remove from DB
             log.info(f'ticket {ticket.id} closed and inactive for more than 7 days, stop tracking')
-            issues.delete(task_id=ticket.id)
+            with self.lock:
+                self.issues.delete(task_id=ticket.id)
 
-    def _get_feed(self):
+    def _get_feed(self) -> List[AtomEntry]:
         """Get issues from rss url"""
         r = requests.get(self.feed)
         if r.status_code != requests.codes.ok:
@@ -189,7 +190,8 @@ class Publisher:
             'journals': str([e for e in sorted(known_entries)]),
             'updated': datetime.now()
         }
-        self.issues.update(data, ['task_id'])
+        with self.lock:
+            self.issues.update(data, ['task_id'])
 
     def _publish_attachment(self, issue, ticket):
         known_attachments = eval(issue.get('attachments', '[]') or '[]')
@@ -225,7 +227,8 @@ class Publisher:
             'attachments': str([e for e in sorted(known_attachments)]),
             'updated': datetime.now()
         }
-        self.issues.update(data, ['task_id'])
+        with self.lock:
+            self.issues.update(data, ['task_id'])
 
     def upload_attachment(self, attachment):
         """Download attachment from Redmine and upload it on Zulip
@@ -263,13 +266,12 @@ class Publisher:
         log.info("%s", reply)
 
     @lru_cache()
-    # @retry(attempts=10)
-    def zulip_topics(self):
+    def zulip_topics(self) -> List[Dict]:
         stream = self.zulip.get_stream_id(self.stream)
         stream = self.zulip.get_stream_topics(stream['stream_id'])
         return [s for s in stream['topics']]
 
-    def zulip_topic_names(self):
+    def zulip_topic_names(self) -> Set[str]:
         return {s['name'] for s in self.zulip_topics()}
 
     def _update_status(self, issue, ticket):
@@ -302,7 +304,8 @@ class Publisher:
                     'status_id': ticket.status.id,
                     'status_name': ticket.status.name,
                     'updated': datetime.now()}
-            self.issues.update(data, ['task_id'])
+            with self.lock:
+                self.issues.update(data, ['task_id'])
 
     def _maybe_resolve_topic(self, issue):
         if issue['status_name'] != 'Closed':
