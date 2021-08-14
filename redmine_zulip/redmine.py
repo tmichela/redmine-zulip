@@ -79,7 +79,7 @@ class Publisher:
         # get new issues
         issues = self._get_feed()
 
-        for n, issue in enumerate(issues):
+        for n, issue in enumerate(reversed(issues)):
             # publish and track
             url = issue.id_
 
@@ -112,7 +112,7 @@ class Publisher:
         For each ticket tracked in our database, publish new messages and attachments
         """
         log.info(f'tracking {len(self.issues)} issues')
-        Pool().map(self._track, [(n, issue) for n, issue in enumerate(self.issues)])
+        Pool().map(self._track, [(n, issue) for n, issue in enumerate(reversed(self.issues))])
 
         # force reloading the list of topics to catch state changes
         self.zulip_topics.cache_clear()
