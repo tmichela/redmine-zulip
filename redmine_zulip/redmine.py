@@ -129,8 +129,6 @@ class Publisher:
             self._update_status(issue, ticket)
             issue = self.issues.find_one(task_id=issue['task_id'])
 
-        # self._maybe_resolve_topic(issue)
-
         # close ticket
         last_update = issue.get('updated')
         if last_update is None:
@@ -262,8 +260,9 @@ class Publisher:
 
     def send(self, issue, content):
         topic = self.format_topic(issue)
-        if f'{RESOLVED_TOPIC_PREFIX}{topic}' in self.zulip_topic_names():
-            topic = f'{RESOLVED_TOPIC_PREFIX}{topic}'
+        resolved_topic = self.format_topic(issue, resolved=True)
+        if resolved_topic in self.zulip_topic_names():
+            topic = resolved_topic
 
         reply = self.zulip.send_message({
             "type": "stream",
