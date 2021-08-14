@@ -44,7 +44,7 @@ setup(
     install_requires=[
         'atoma',
         'dataset',
-        'loguru'
+        'loguru',
         'pypandoc',
         'python-redmine>=2.3.0',
         'toml',
