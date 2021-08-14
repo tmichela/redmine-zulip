@@ -62,7 +62,7 @@ class Publisher:
         return topic
 
     def run(self):
-        log.info('Polling Redmine for new tasks')
+        log.info(f'Polling Redmine for new tasks (publishing to {self.stream}')
         self.poll()
         self.track()
         log.info('done.')
