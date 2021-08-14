@@ -292,19 +292,24 @@ class Publisher:
             old_topic = f'Issue #{issue["task_id"]}'
             if old_topic not in self.zulip_topic_names():
                 old_topic = f'{old_topic} - {issue["status_name"]}'
-
             new_topic = f'Issue #{issue["task_id"]} - {ticket.status.name}'
 
-            # rename zulip topic for the issue with the new status
-            res = self.zulip_admin.move_topic(
-                self.stream, self.stream,
-                old_topic,
-                new_topic,
-                notify_old_topic=False,
-                notify_new_topic=False
-            )
-            log.info(f'Update status for issue #{issue["task_id"]}: {issue["status_name"]} -> {ticket.status.name}')
-            log.info(res)
+            topic = next((t for t in self.zulip_topics() if t['name'] == old_topic), None)
+            if topic is None:
+                log.warn(f'topic not found on zulip stream: {old_topic}')
+                return
+
+            # rename zulip topic with the new status
+            res = self.zulip.update_message({
+                'message_id': topic['max_id'],
+                'topic': new_topic,
+                'propagate_mode': 'change_all',
+                'send_notification_to_old_thread': False,
+                'send_notification_to_new_thread': False,
+            })
+            log.info(f'Update status for issue #{issue["task_id"]}: '
+                     f'{issue["status_name"]} -> {ticket.status.name}\n'
+                     f'{res}')
 
             # update DB entry
             data = {'task_id': ticket.id,
