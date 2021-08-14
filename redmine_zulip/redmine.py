@@ -99,7 +99,7 @@ class Publisher:
             info['journals'] = str([])
             info['updated'] = datetime.now()
 
-            log.info('INSERT new task:\n%s', info)
+            log.info(f'INSERT new task:\n{info}')
 
             # write issue (+ journals) to zulip
             self._publish_issue(info, issue.description)
@@ -248,7 +248,7 @@ class Publisher:
         """
         f = self.redmine.file.get(attachment.id)
         fpath = f.download(savepath='/tmp/')
-        log.info("Redmine download file to: %s", fpath)
+        log.info(f"Redmine download file to: {fpath}")
 
         with open(fpath, 'rb') as f:
             # upload image to zulip
@@ -258,7 +258,7 @@ class Publisher:
                 files=[f],
             )
         if result['result'] != 'success':
-            log.info("Failed uploading file to zulip:\n%s", result)
+            log.info(f"Failed uploading file to zulip:\n{result}")
             return {'uri': None}
 
         return result
@@ -275,7 +275,7 @@ class Publisher:
             "topic": topic,
             "content": content
         })
-        log.info("%s", reply)
+        log.info(reply)
 
     @lru_cache()
     def zulip_topics(self) -> List[Dict]:
