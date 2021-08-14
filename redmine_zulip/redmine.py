@@ -50,8 +50,11 @@ class Publisher:
         self.feed = conf['REDMINE']['rss_feed']
 
     @staticmethod
-    def format_topic(issue: dict) -> str:
-        return f'Issue #{issue["task_id"]} - {issue["status_name"]}'
+    def format_topic(issue: dict, resolved=False) -> str:
+        topic = f'Issue #{issue["task_id"]} - {issue["status_name"]}'
+        if resolved:
+            topic = f'{RESOLVED_TOPIC_PREFIX}{topic}'
+        return topic
 
     def run(self):
         log.info('Polling Redmine for new tasks')
@@ -106,6 +109,11 @@ class Publisher:
         log.info(f'tracking {len(self.issues)} issues')
         Pool().map(self._track, [(n, issue) for n, issue in enumerate(self.issues)])
 
+        # force reloading the list of topics to catch state changes
+        self.zulip_topics.cache_clear()
+        for issue in self.issues:
+            self._maybe_resolve_topic(issue)
+
     def _track(self, data):
         n, issue = data
 
@@ -121,7 +129,7 @@ class Publisher:
             self._update_status(issue, ticket)
             issue = self.issues.find_one(task_id=issue['task_id'])
 
-        self._maybe_resolve_topic(issue)
+        # self._maybe_resolve_topic(issue)
 
         # close ticket
         last_update = issue.get('updated')
@@ -308,20 +316,27 @@ class Publisher:
                 self.issues.update(data, ['task_id'])
 
     def _maybe_resolve_topic(self, issue):
-        if issue['status_name'] != 'Closed':
-            return
-
         title = self.format_topic(issue)
+        resolved_title = self.format_topic(issue, resolved=True)
+
         for topic in self.zulip_topics():
-            if topic['name'] == title:
+            if topic['name'] == title and issue['status_name'] == 'Closed':
                 self.zulip.update_message({
                     'message_id': topic['max_id'],
-                    'topic': f'{RESOLVED_TOPIC_PREFIX}{title}',
+                    'topic': resolved_title,
                     'propagate_mode': 'change_all',
                     'send_notification_to_old_thread': False,
-                    # 'send_notification_to_new_thread': False,
                 })
                 log.info(f'resolved: {title}')
+                break
+            elif topic['name'] == resolved_title and issue['status_name'] != 'Closed':
+                self.zulip.update_message({
+                    'message_id': topic['max_id'],
+                    'topic': title,
+                    'propagate_mode': 'change_all',
+                    'send_notification_to_old_thread': False,
+                })
+                log.info(f'un-resolved: {resolved_title}')
                 break
 
 
