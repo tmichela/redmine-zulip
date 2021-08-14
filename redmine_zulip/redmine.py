@@ -333,22 +333,22 @@ class Publisher:
 
         for topic in self.zulip_topics():
             if topic['name'] == title and issue['status_name'] == 'Closed':
-                self.zulip.update_message({
+                res = self.zulip.update_message({
                     'message_id': topic['max_id'],
                     'topic': resolved_title,
                     'propagate_mode': 'change_all',
                     'send_notification_to_old_thread': False,
                 })
-                log.info(f'resolved: {title}')
+                log.info(f'resolved: {title}\n{res}')
                 break
             elif topic['name'] == resolved_title and issue['status_name'] != 'Closed':
-                self.zulip.update_message({
+                res = self.zulip.update_message({
                     'message_id': topic['max_id'],
                     'topic': title,
                     'propagate_mode': 'change_all',
                     'send_notification_to_old_thread': False,
                 })
-                log.info(f'un-resolved: {resolved_title}')
+                log.info(f'un-resolved: {resolved_title}\n{res}')
                 break
 
 
