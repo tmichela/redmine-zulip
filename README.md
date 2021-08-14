@@ -43,11 +43,15 @@ redmine-zulip-publisher ~/config.toml
 # sqlite3 database file
 sql3_file = 'sqlite:///redmine-publisher.db'
 
+[LOGGING]
+file = 'something.log'
+level = 'INFO'
+rotation = 'monthly'
+retention = '6 months'
+
 [REDMINE]
 # redmine url
 url = 'https://in.xfel.eu/redmine'
-# project
-project = 'data-analysis'
 # redmine access token
 token = ''
 # redmine rss feed for new tasks
@@ -58,6 +62,4 @@ rss_feed = ''
 stream = 'da-tickets'
 # configuration file for the zulip bot: publish new messages
 bot = ''
-# configuration file for zulip admin: move topic (update ticket status)
-admin = ''
 ```
