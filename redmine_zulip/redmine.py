@@ -32,8 +32,14 @@ class Publisher:
         conf = toml.load(configuration)
 
         # logging
-        if conf['LOGGING'].get('file'):
-            log.add(conf['LOGGING']['file'])
+        logconf = conf['LOGGING']
+        if logconf.get('file'):
+            log.add(
+                logconf['file'],
+                level=logconf.get('level', 'DEBUG'),
+                rotation=logconf.get('rotation'),
+                retention=logconf.get('retention')
+            )
 
         # database connection
         db_path = conf['DATABASE']['sql3_file']
@@ -43,7 +49,6 @@ class Publisher:
         self.lock = Lock()
 
         self.zulip = zulip.Client(config_file=conf['ZULIP']['bot'])
-        self.zulip_admin = zulip.Client(config_file=conf['ZULIP']['admin'])
         self.stream = conf['ZULIP']['stream']
 
         self.redmine = Redmine(conf['REDMINE']['url'], key=conf['REDMINE']['token'])
