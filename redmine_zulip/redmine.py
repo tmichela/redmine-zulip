@@ -112,7 +112,7 @@ class Publisher:
         For each ticket tracked in our database, publish new messages and attachments
         """
         log.info(f'tracking {len(self.issues)} issues')
-        Pool().map(self._track, [(n, issue) for n, issue in enumerate(reversed(self.issues))])
+        Pool().map(self._track, [(n, issue) for n, issue in enumerate(self.issues)])
 
         # force reloading the list of topics to catch state changes
         self.zulip_topics.cache_clear()
@@ -269,13 +269,16 @@ class Publisher:
         if resolved_topic in self.zulip_topic_names():
             topic = resolved_topic
 
+        log.info(f'sending message to: {topic}@{self.stream}')
         reply = self.zulip.send_message({
             "type": "stream",
             "to": self.stream,
             "topic": topic,
             "content": content
         })
-        log.info(reply)
+
+        if reply['result'] != 'success':
+            log.info(f'{reply}\ncontent:\n{content}')
 
     @lru_cache()
     def zulip_topics(self) -> List[Dict]:
