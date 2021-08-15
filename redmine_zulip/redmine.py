@@ -2,9 +2,7 @@ from argparse import ArgumentParser
 from datetime import datetime
 from functools import lru_cache
 from multiprocessing.dummy import Pool
-from os import removedirs
 from pathlib import Path
-import requests
 from textwrap import dedent
 from threading import Lock
 from typing import Dict, List, Set, Union
@@ -14,6 +12,7 @@ from atoma.atom import AtomEntry
 import dataset
 from loguru import logger as log
 from redminelib import Redmine
+import requests
 import toml
 import zulip
 
@@ -67,7 +66,6 @@ class Publisher:
         return topic
 
     def run(self):
-        log.info(f'Polling Redmine for new tasks (publishing to {self.stream}')
         self.poll()
         self.track()
         log.info('done.')
@@ -81,15 +79,20 @@ class Publisher:
         - track state (update topic title)
         - track new messages and attachments on redmine and post on Zulip
         """
+
+        log.info(f'Polling Redmine for new issues (publishing to {self.stream})')
         # get new issues
         issues = self._get_feed()
 
-        for n, issue in enumerate(reversed(issues)):
+        new_issues = 0
+        for issue in reversed(issues):
             # publish and track
             url = issue.id_
 
             if self.issues.find_one(url=url):
                 continue  # issue already tracked
+
+            new_issues += 1
 
             info = {
                 'url': url,
@@ -104,12 +107,14 @@ class Publisher:
             info['journals'] = str([])
             info['updated'] = datetime.now()
 
-            log.info(f'INSERT new task:\n{info}')
+            log.info(f'INSERT new issue:\n{info}')
 
             # write issue (+ journals) to zulip
             self._publish_issue(info, issue.description)
             self._publish_journal(info, issue)
             self._publish_attachment(info, issue)
+
+        log.info(f'Found {new_issues} new issues')
 
     def track(self):
         """Update open tickets
@@ -214,7 +219,7 @@ class Publisher:
             self.send(issue, msg)
 
             new_entries.append(journal.id)
-       
+
         if not new_entries:
             return
 
@@ -290,6 +295,13 @@ class Publisher:
         return result
 
     def send(self, issue, content):
+        """Send a message to zulip
+
+        issue: dict
+            issue informations, used to format the topic name
+        content: str
+            message content to publish, markdown formatted str
+        """
         topic = self.format_topic(issue)
         resolved_topic = self.format_topic(issue, resolved=True)
         if resolved_topic in self.zulip_topic_names():
@@ -308,11 +320,15 @@ class Publisher:
 
     @lru_cache()
     def zulip_topics(self) -> List[Dict]:
+        """Returns all topics in self.stream
+        """
         stream = self.zulip.get_stream_id(self.stream)
         stream = self.zulip.get_stream_topics(stream['stream_id'])
         return [s for s in stream['topics']]
 
     def zulip_topic_names(self) -> Set[str]:
+        """Returns all topic names in self.stream
+        """
         return {s['name'] for s in self.zulip_topics()}
 
     def _update_status(self, issue, ticket):
@@ -330,7 +346,7 @@ class Publisher:
 
             topic = next((t for t in self.zulip_topics() if t['name'] == old_topic), None)
             if topic is None:
-                log.warn(f'topic not found on zulip stream: {old_topic}')
+                log.warning(f'topic not found on zulip stream: {old_topic}')
                 return
 
             # rename zulip topic with the new status
