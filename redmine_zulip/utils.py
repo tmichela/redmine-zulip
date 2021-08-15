@@ -5,7 +5,9 @@ from time import sleep
 import pypandoc
 
 
-def textile_to_md(text):
+def textile_to_md(text: str):
+    """Conver textile formated text to markdown
+    """
     text = pypandoc.convert_text(text, to='markdown_github', format='textile')
     return re.sub(r'\\(.)', r'\1', text)
 
@@ -23,10 +25,16 @@ def indent(text, offset=3):
 
 
 def retry(func=None, *, attempts=1, delay=0, exc=(Exception,)):
-    """Re-execute decorated function.
-    :attemps int: number of tries, default 1
-    :delay float: timeout between each tries in seconds, default 0
-    :exc tuple: collection of exceptions to be caugth
+    """Re-execute decorated function if execution fails
+
+    Execute the function while it fails up to `attempt` times.
+
+    attemps: int
+        number of tries, default 1
+    delay: float
+        timeout between each tries in seconds, default 0
+    exc: Collection[Exception]
+        collection of exceptions to be caugth
     """
     if func is None:
         return partial(retry, attempts=attempts, delay=delay, exc=exc)
@@ -37,7 +45,7 @@ def retry(func=None, *, attempts=1, delay=0, exc=(Exception,)):
         for i in reversed(range(attempts)):
             retry._tries[func.__name__] += 1
             try:
-                ret = func(*args, *kwargs)
+                ret = func(*args, **kwargs)
             except exc:
                 if i <= 0:
                     raise
