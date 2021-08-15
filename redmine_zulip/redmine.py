@@ -56,7 +56,7 @@ class Publisher:
 
         # options
         self.discard = float(conf['OPTIONS'].get('discard_closed', 7))
-        self.remind = float(conf['OPTIONS'].get('reminder_open'))
+        self.remind = float(conf['OPTIONS'].get('remind_open', 0))
 
     @staticmethod
     def format_topic(issue: dict, resolved=False) -> str:
