@@ -32,13 +32,12 @@ class Publisher:
         conf = toml.load(configuration)
 
         # logging
-        logconf = conf['LOGGING']
-        if logconf.get('file'):
+        if 'LOGGING' in conf and 'file' in conf['logging']:
             log.add(
-                logconf['file'],
-                level=logconf.get('level', 'DEBUG'),
-                rotation=logconf.get('rotation'),
-                retention=logconf.get('retention')
+                conf['LOGGING']['file'],
+                level=conf['LOGGING'].get('level', 'DEBUG'),
+                rotation=conf['LOGGING'].get('rotation'),
+                retention=conf['LOGGING'].get('retention')
             )
 
         # database connection
@@ -55,8 +54,9 @@ class Publisher:
         self.feed = conf['REDMINE']['rss_feed']
 
         # options
-        self.discard = float(conf['OPTIONS'].get('discard_closed', 7))
-        self.remind = float(conf['OPTIONS'].get('remind_open', 0))
+        if 'OPTIONS' in conf:
+            self.discard = float(conf['OPTIONS'].get('discard_closed', 7))
+            self.remind = float(conf['OPTIONS'].get('remind_open', 0))
 
     @staticmethod
     def format_topic(issue: dict, resolved=False) -> str:
