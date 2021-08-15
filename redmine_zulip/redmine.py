@@ -2,6 +2,7 @@ from argparse import ArgumentParser
 from datetime import datetime
 from functools import lru_cache
 from multiprocessing.dummy import Pool
+from os import removedirs
 from pathlib import Path
 import requests
 from textwrap import dedent
@@ -53,6 +54,10 @@ class Publisher:
 
         self.redmine = Redmine(conf['REDMINE']['url'], key=conf['REDMINE']['token'])
         self.feed = conf['REDMINE']['rss_feed']
+
+        # options
+        self.discard = float(conf['OPTIONS'].get('discard_closed', 7))
+        self.remind = float(conf['OPTIONS'].get('reminder_open'))
 
     @staticmethod
     def format_topic(issue: dict, resolved=False) -> str:
@@ -143,9 +148,29 @@ class Publisher:
             with self.lock:
                 self.issues.update(data, ['task_id'])
 
-        if ticket.status.name == 'Closed' and (datetime.now() - last_update).days >= 7:
+        # send reminder on open ticket
+        if (
+                ticket.status.name != 'Closed' and
+                self.remind and
+                (datetime.now() - last_update).days >= self.remind
+        ):
+            log.info(f'Ticket {ticket.id} inactive for more than {self.remind} days, '
+                     'sending reminder')
+            self.send(issue,
+                      "It's been quiet for a while here :eyes:\ndo we have any update?")
+            with self.lock:
+                self.issues.update(
+                    {'task_id': issue['task_id'], 'updated': datetime.now()},
+                    ['task_id']
+                )
+
+        if (
+                ticket.status.name == 'Closed' and
+                (datetime.now() - last_update).days >= self.discard
+        ):
             # ticket is closed, remove from DB
-            log.info(f'ticket {ticket.id} closed and inactive for more than 7 days, stop tracking')
+            log.info(f'ticket {ticket.id} closed and inactive for more than 7 days, stop'
+                     'tracking')
             with self.lock:
                 self.issues.delete(task_id=ticket.id)
 
@@ -222,8 +247,9 @@ class Publisher:
                 res = self.upload_attachment(attachment)
                 uri = res['uri']
 
-            msg = f'New attachment from **{attachment.author}**: [{attachment.filename}]({uri or attachment.content_url})'
             # publish message
+            msg = (f'New attachment from **{attachment.author}**: '
+                   f'[{attachment.filename}]({uri or attachment.content_url})')
             self.send(issue, msg)
 
             new_attachments.append(attachment.id)

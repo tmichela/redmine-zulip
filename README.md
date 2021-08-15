@@ -62,4 +62,10 @@ rss_feed = ''
 stream = 'da-tickets'
 # configuration file for the zulip bot: publish new messages
 bot = ''
+
+[OPTIONS]
+# enable reminder bot on inactive open tickets, disabled by default
+reminder = 14  # Days
+# stop tracking closed tasks #days after it's been closed, default 7
+discard_closed = 7  # Days
 ```
