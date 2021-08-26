@@ -32,7 +32,7 @@ class Publisher:
         conf = toml.load(configuration)
 
         # logging
-        if 'LOGGING' in conf and 'file' in conf['logging']:
+        if 'LOGGING' in conf and 'file' in conf['LOGGING']:
             log.add(
                 conf['LOGGING']['file'],
                 level=conf['LOGGING'].get('level', 'DEBUG'),
