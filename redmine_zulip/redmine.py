@@ -32,7 +32,7 @@ class Publisher:
         conf = toml.load(configuration)
 
         # logging
-        if 'LOGGING' in conf and 'file' in conf['logging']:
+        if 'LOGGING' in conf and 'file' in conf['LOGGING']:
             log.add(
                 conf['LOGGING']['file'],
                 level=conf['LOGGING'].get('level', 'DEBUG'),
@@ -342,9 +342,12 @@ class Publisher:
             old_topic = f'Issue #{issue["task_id"]}'
             if old_topic not in self.zulip_topic_names():
                 old_topic = f'{old_topic} - {issue["status_name"]}'
+            old_topic_resolved = f'{RESOLVED_TOPIC_PREFIX}{old_topic}'
             new_topic = f'Issue #{issue["task_id"]} - {ticket.status.name}'
 
-            topic = next((t for t in self.zulip_topics() if t['name'] == old_topic), None)
+            topic = next((t for t in self.zulip_topics()
+                          if t['name'] in (old_topic, old_topic_resolved)),
+                         None)
             if topic is None:
                 log.warning(f'topic not found on zulip stream: {old_topic}')
                 return
