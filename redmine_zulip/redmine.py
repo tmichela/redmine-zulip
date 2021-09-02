@@ -345,10 +345,13 @@ class Publisher:
             old_topic_resolved = f'{RESOLVED_TOPIC_PREFIX}{old_topic}'
             new_topic = f'Issue #{issue["task_id"]} - {ticket.status.name}'
 
-            topic = next((t for t in self.zulip_topics()
-                          if t['name'] in (old_topic, old_topic_resolved)),
-                         None)
-            if topic is None:
+            for topic in self.zulip_topics():
+                if topic == old_topic:
+                    break
+                if topic == old_topic_resolved:
+                    new_topic = f'{RESOLVED_TOPIC_PREFIX}{new_topic}'
+                    break
+            else:
                 log.warning(f'topic not found on zulip stream: {old_topic}')
                 return
 
