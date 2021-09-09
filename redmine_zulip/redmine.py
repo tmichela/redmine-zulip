@@ -346,9 +346,10 @@ class Publisher:
             new_topic = f'Issue #{issue["task_id"]} - {ticket.status.name}'
 
             for topic in self.zulip_topics():
-                if topic == old_topic:
+                name = topic['name']
+                if name == old_topic:
                     break
-                if topic == old_topic_resolved:
+                if name == old_topic_resolved:
                     new_topic = f'{RESOLVED_TOPIC_PREFIX}{new_topic}'
                     break
             else:
