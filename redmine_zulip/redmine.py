@@ -242,13 +242,15 @@ class Publisher:
 
             if attachment.id in known_attachments:
                 continue
-            if (
+            elif not hasattr(attachment, 'content_type'):
+                pass
+            elif (
                     attachment.content_type == 'application/octet-stream' and
                     attachment.filename.endswith('.eml')
             ):
                 new_attachments.append(attachment.id)
                 continue
-            if 'image' in attachment.content_type:
+            elif 'image' in attachment.content_type:
                 res = self.upload_attachment(attachment)
                 uri = res['uri']
 
