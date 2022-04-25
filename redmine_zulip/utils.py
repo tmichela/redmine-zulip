@@ -5,10 +5,10 @@ from time import sleep
 import pypandoc
 
 
-def textile_to_md(text: str):
+def to_md(text: str, format='html') -> str:
     """Conver textile formated text to markdown
     """
-    text = pypandoc.convert_text(text, to='markdown_github', format='textile')
+    text = pypandoc.convert_text(text, to='markdown_github', format=format)
     return re.sub(r'\\(.)', r'\1', text)
 
 

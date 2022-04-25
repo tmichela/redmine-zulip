@@ -16,7 +16,7 @@ import requests
 import toml
 import zulip
 
-from .utils import indent, textile_to_md
+from .utils import indent, to_md
 
 
 RESOLVED_TOPIC_PREFIX = b'\xe2\x9c\x94 '.decode('utf8')  # = '✔ '
@@ -50,7 +50,11 @@ class Publisher:
         self.zulip = zulip.Client(config_file=conf['ZULIP']['bot'])
         self.stream = conf['ZULIP']['stream']
 
-        self.redmine = Redmine(conf['REDMINE']['url'], key=conf['REDMINE']['token'])
+        self.redmine = Redmine(
+            conf['REDMINE']['url'],
+            key=conf['REDMINE']['token'],
+            version=conf['REDMINE'].get('version', '5.0.0')
+        )
         self.feed = conf['REDMINE']['rss_feed']
 
         # options
@@ -192,7 +196,7 @@ class Publisher:
         content = dedent(f"""\
             **{issue['author']} opened [Issue {issue['title']}]({issue['url']})**
             ```quote
-            {indent(textile_to_md(description))}
+            {indent(to_md(description))}
             ```
             """)
 
@@ -214,7 +218,7 @@ class Publisher:
             url = f'{self.redmine.url}/issues/{issue["task_id"]}#change-{journal.id}'
             msg = (
                 f'**{journal.user.name}** [said]({url}):\n'
-                f'```quote\n{textile_to_md(journal.notes)}\n```'
+                f'```quote\n{to_md(journal.notes)}\n```'
             )
             self.send(issue, msg)
 
