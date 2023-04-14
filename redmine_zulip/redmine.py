@@ -387,7 +387,7 @@ class Publisher:
         resolved_title = self.format_topic(issue, resolved=True)
 
         for topic in self.zulip_topics():
-            if topic['name'] == title and issue['status_name'] == 'Closed':
+            if topic['name'] == title and issue['status_name'] in ('Closed', 'Rejected'):
                 res = self.zulip.update_message({
                     'message_id': topic['max_id'],
                     'topic': resolved_title,
@@ -396,7 +396,7 @@ class Publisher:
                 })
                 log.info(f'resolved: {title}\n{res}')
                 break
-            elif topic['name'] == resolved_title and issue['status_name'] != 'Closed':
+            elif topic['name'] == resolved_title and issue['status_name'] not in ('Closed', 'Rejected'):
                 res = self.zulip.update_message({
                     'message_id': topic['max_id'],
                     'topic': title,
