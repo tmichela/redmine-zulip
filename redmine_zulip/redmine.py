@@ -193,12 +193,12 @@ class Publisher:
         return atoma.parse_atom_bytes(r.content).entries
 
     def _publish_issue(self, issue, description):
-        content = dedent(f"""\
-            **{issue['author']} opened [Issue {issue['title']}]({issue['url']})**
-            ```quote
-            {indent(to_md(description))}
-            ```
-            """)
+        content = (
+            f"**{issue['author']} opened [Issue {issue['title']}]({issue['url']})**\n",
+            "```quote\n",
+            f"{indent(to_md(description))}\n",
+            "```\n",
+        )
 
         self.send(issue, content)
         # update database
