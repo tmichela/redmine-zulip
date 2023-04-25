@@ -194,10 +194,10 @@ class Publisher:
 
     def _publish_issue(self, issue, description):
         content = (
-            f"**{issue['author']} opened [Issue {issue['title']}]({issue['url']})**\n",
-            "```quote\n",
-            f"{indent(to_md(description))}\n",
-            "```\n",
+            f"**{issue['author']} opened [Issue {issue['title']}]({issue['url']})**\n"
+            "```quote\n"
+            f"{indent(to_md(description))}\n"
+            "```\n"
         )
 
         self.send(issue, content)
@@ -395,7 +395,13 @@ class Publisher:
                     'send_notification_to_old_thread': False,
                 })
                 log.info(f'resolved: {title}\n{res}')
-                break
+
+                #if res['result'] == 'ERROR' and res['msg'] == 'The time limit for editing this message\'s topic has passed':
+                    # can't edit topic anymore, remove ticket from DB since ticket is closed
+                    # TODO just resolve the topic but do not update the title
+                    #with self.lock:
+                    #    self.issues.delete(task_id=issue['task_id'])
+
             elif topic['name'] == resolved_title and issue['status_name'] not in ('Closed', 'Rejected'):
                 res = self.zulip.update_message({
                     'message_id': topic['max_id'],
@@ -404,7 +410,9 @@ class Publisher:
                     'send_notification_to_old_thread': False,
                 })
                 log.info(f'un-resolved: {resolved_title}\n{res}')
-                break
+            else:
+                continue
+            break
 
 
 def main(argv=None):
