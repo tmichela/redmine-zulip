@@ -196,7 +196,7 @@ class Publisher:
         content = (
             f"**{issue['author']} opened [Issue {issue['title']}]({issue['url']})**\n"
             "```quote\n"
-            f"{indent(to_md(description))}\n"
+            f"{to_md(description)}\n"
             "```\n"
         )
 
