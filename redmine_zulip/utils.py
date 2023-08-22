@@ -1,15 +1,5 @@
 from functools import partial, wraps
-import re
 from time import sleep
-
-import pypandoc
-
-
-def to_md(text: str, format='html') -> str:
-    """Conver textile formated text to markdown
-    """
-    text = pypandoc.convert_text(text, to='markdown_github', format=format)
-    return re.sub(r'\\(.)', r'\1', text)
 
 
 def indent(text, offset=3):
