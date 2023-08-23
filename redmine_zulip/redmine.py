@@ -3,7 +3,6 @@ from datetime import datetime
 from functools import lru_cache
 from multiprocessing.dummy import Pool
 from pathlib import Path
-from textwrap import dedent
 from threading import Lock
 from typing import Dict, List, Set, Union
 
@@ -146,8 +145,6 @@ class Publisher:
         ticket = self.redmine.issue.get(issue['task_id'])
 
         # legacy, add issue subject to db
-        print(issue)
-        print(ticket.subject)
         if 'subject' not in issue or issue['subject'] is None:
             issue['subject'] = ticket.subject
             with self.lock:
@@ -390,6 +387,7 @@ class Publisher:
             'topic': new_topic,
             'propagate_mode': 'change_all',
             'send_notification_to_old_thread': False,
+            'send_notification_to_new_thread': False,
         })
         log.info(f'moved topic: {topic} -> {new_topic}\n{res}')
 
