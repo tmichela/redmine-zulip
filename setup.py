@@ -18,12 +18,6 @@ def find_version(*parts):
     raise RuntimeError("Unable to find version string.")
 
 
-# install pandoc
-if not shutil.which('pandoc'):
-    import pypandoc
-    pypandoc.download_pandoc(version='2.2.3.2', download_folder='/tmp')
-
-
 setup(
     name="Redmine-zulip",
     version=find_version("redmine_zulip", "__init__.py"),
@@ -44,8 +38,8 @@ setup(
     install_requires=[
         'atoma',
         'dataset',
+        'html2text',
         'loguru',
-        'pypandoc',
         'python-redmine>=2.3.0',
         'toml',
         'zulip>=0.7.1',
