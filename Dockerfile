@@ -1,4 +1,4 @@
-FROM python:3
+FROM python:3.9-alpine
 
 # install redmine-zulip
 RUN mkdir -p venv-tracker && \
