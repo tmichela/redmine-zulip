@@ -161,8 +161,7 @@ class Publisher:
             import traceback
             traceback.print_exc()
     
-        if ticket.status.id != issue['status_id']:
-            issue = self._update_status(issue, ticket)
+        issue = self._update_status(issue, ticket)
 
         # close ticket
         last_update = issue.get('updated')
@@ -348,18 +347,18 @@ class Publisher:
         """
         stream = self.zulip.get_stream_id(self.stream)
         stream = self.zulip.get_stream_topics(stream['stream_id'])
-        return [s for s in stream['topics']]
+        return [t for t in stream['topics']]
 
     def zulip_topic(self, name):
-        return next((t for t in self.zulip_topics() if t['name'] == name), None)
+        return next((t for t in self.zulip_topics() if name.startswith(t['name'][:-3])), None)
 
     def zulip_topic_names(self, unresolved=True, resolved=True) -> Set[str]:
         """Returns all topic names in self.stream
         """
-        return {s['name'] for s in self.zulip_topics()
+        return [s['name'] for s in self.zulip_topics()
                 if (resolved and s['name'].startswith(RESOLVED_TOPIC_PREFIX)) or
                    (unresolved and not s['name'].startswith(RESOLVED_TOPIC_PREFIX))
-        }
+        ]
 
     def _update_status(self, issue, ticket):
         """Update the issue state in the zulip topic name
@@ -368,7 +367,7 @@ class Publisher:
         this requires a client with admin right.
         """
         if ticket.status.name != issue['status_name']:
-            self.send(issue, f'**Status**: *{issue["status_name"]}* -> *{ticket.status.name}*')
+            # self.send(issue, f'**Status**: *{issue["status_name"]}* -> *{ticket.status.name}*')
 
             # update DB entry
             data = {'task_id': ticket.id,
@@ -403,11 +402,13 @@ class Publisher:
     def topic_resolution(self, issue):
         topic, resolved_topic = format_topic(issue)
 
-        if issue['status_name'] in ('Closed', 'Rejected', 'Resolved'):
-            if topic in self.zulip_topic_names(resolved=False):
+        # TODO what if multiple topics have the same name?
+        if issue['status_name'] in CLOSED_STATES:
+            # topic names are only up to xx characters :(
+            if topic := next((t for t in self.zulip_topic_names(resolved=False) if topic.startswith(t[:-3])), None):
                 self._rename_topic(topic, resolved_topic)
         else:
-            if resolved_topic in self.zulip_topic_names(unresolved=False):
+            if resolved_topic := next((t for t in self.zulip_topic_names(unresolved=False) if resolved_topic.startswith(t[:-3])), None):
                 self._rename_topic(resolved_topic, topic)
 
 
