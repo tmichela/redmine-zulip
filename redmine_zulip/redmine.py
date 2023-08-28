@@ -405,10 +405,10 @@ class Publisher:
         # TODO what if multiple topics have the same name?
         if issue['status_name'] in CLOSED_STATES:
             # topic names are only up to xx characters :(
-            if topic := next((t for t in self.zulip_topic_names(resolved=False) if topic.startswith(t[:-3])), None):
+            if topic := next((t for t in self.zulip_topic_names(resolved=False) if topic.startswith(t.rstrip('.'))), None):
                 self._rename_topic(topic, resolved_topic)
         else:
-            if resolved_topic := next((t for t in self.zulip_topic_names(unresolved=False) if resolved_topic.startswith(t[:-3])), None):
+            if resolved_topic := next((t for t in self.zulip_topic_names(unresolved=False) if resolved_topic.startswith(t.rstrip('.'))), None):
                 self._rename_topic(resolved_topic, topic)
 
 
