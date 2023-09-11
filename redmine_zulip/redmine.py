@@ -19,6 +19,7 @@ import zulip
 
 RESOLVED_TOPIC_PREFIX = b'\xe2\x9c\x94 '.decode('utf8')  # = '✔ '
 CLOSED_STATES = ('Closed', 'Resolved', 'Rejected')
+ZULIP_TOPIC_MAX_CHAR = 58  # characters, actually 60 but we leave 2 extra for resolving the topic
 
 
 def format_topic_legacy(issue):
@@ -26,9 +27,14 @@ def format_topic_legacy(issue):
     resolved_topic = f'{RESOLVED_TOPIC_PREFIX}{topic}'
     return topic, resolved_topic
 
-
+# TODO fix all existing topic with too long subject
 def format_topic(issue):
-    topic = f'{issue["subject"]} - #{issue["task_id"]}'
+    suffix = f' - #{issue["task_id"]}'
+    subject = issue['subject']
+
+    topic = subject + suffix
+    if len(topic) > ZULIP_TOPIC_MAX_CHAR:
+        topic = subject[:ZULIP_TOPIC_MAX_CHAR - len(suffix) - 3] + "..." + suffix
     resolved_topic = f'{RESOLVED_TOPIC_PREFIX}{topic}'
     return topic, resolved_topic
 
@@ -402,9 +408,7 @@ class Publisher:
     def topic_resolution(self, issue):
         topic, resolved_topic = format_topic(issue)
 
-        # TODO what if multiple topics have the same name?
         if issue['status_name'] in CLOSED_STATES:
-            # topic names are only up to xx characters :(
             if topic := next((t for t in self.zulip_topic_names(resolved=False) if topic.startswith(t.rstrip('.'))), None):
                 self._rename_topic(topic, resolved_topic)
         else:
