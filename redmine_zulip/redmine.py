@@ -214,19 +214,23 @@ class Publisher:
         return atoma.parse_atom_bytes(r.content).entries
 
     def _publish_issue(self, issue, description):
+        ticket = self.redmine.issue.get(issue['task_id'])
+        processed_desc, embedded_ids = self._process_embedded_attachments(html2text(description), ticket)
         content = (
             f"**{issue['author']} opened [Issue {issue['title']}]({issue['url']})**\n"
             "```quote\n"
-            f"{html2text(description)}\n"
+            f"{processed_desc}\n"
             "```\n"
         )
 
         self.send(issue, content)
-        # update database
+        # update database with embedded attachments
+        issue['attachments'] = str(embedded_ids)
         self.issues.insert(issue)
 
     def _publish_journal(self, issue, ticket):
         known_entries = eval(issue.get('journals', '[]') or '[]')
+        known_attachments = eval(issue.get('attachments', '[]') or '[]')
         new_entries = []
         for journal in ticket.journals:
             if journal.id in known_entries:
@@ -237,23 +241,26 @@ class Publisher:
                 continue
 
             url = f'{self.redmine.url}/issues/{issue["task_id"]}#change-{journal.id}'
+            processed_notes, embedded_ids = self._process_embedded_attachments(html2text(journal.notes), ticket)
             msg = (
                 f'**{journal.user.name}** [said]({url}):\n'
-                f'```quote\n{html2text(journal.notes)}\n```'
+                f'```quote\n{processed_notes}\n```'
             )
             self.send(issue, msg)
 
             new_entries.append(journal.id)
+            known_attachments.extend(embedded_ids)
 
         if not new_entries:
             return
 
         known_entries += new_entries
 
-        # update DB entry
+        # update DB entry with both journals and embedded attachments
         data = {
             'task_id': issue['task_id'],
             'journals': str([e for e in sorted(known_entries)]),
+            'attachments': str([e for e in sorted(set(known_attachments))]),
             'updated': datetime.now()
         }
         with self.lock:
@@ -265,6 +272,7 @@ class Publisher:
         for attachment in ticket.attachments:
             uri = None
 
+            # Skip if already embedded in a message or previously published
             if attachment.id in known_attachments:
                 continue
             elif not hasattr(attachment, 'content_type'):
@@ -296,11 +304,46 @@ class Publisher:
         # update database
         data = {
             'task_id': issue['task_id'],
-            'attachments': str([e for e in sorted(known_attachments)]),
+            'attachments': str([e for e in sorted(set(known_attachments))]),
             'updated': datetime.now()
         }
         with self.lock:
             self.issues.update(data, ['task_id'])
+
+    def _process_embedded_attachments(self, content, ticket):
+        """Process text content to replace attachment references with actual image embeds
+        
+        Args:
+            content (str): The message content that may contain attachment references
+            ticket: The redmine ticket object containing the attachments
+            
+        Returns:
+            tuple[str, list]: The processed content and list of embedded attachment IDs
+        """
+        import re
+        
+        # Find all attachment references in the content
+        pattern = r'attachment:"([^"\s]+)"'
+        matches = re.finditer(pattern, content)
+        
+        embedded_ids = []
+        # For each match, try to find and upload the corresponding attachment
+        for match in matches:
+            filename = match.group(1)
+            # Find the attachment in the ticket
+            attachment = next((a for a in ticket.attachments if a.filename == filename), None)
+            if attachment and hasattr(attachment, 'content_type') and 'image' in attachment.content_type:
+                # Upload the image to Zulip
+                res = self.upload_attachment(attachment)
+                if res.get('uri'):
+                    # Replace the attachment reference with the image embed
+                    content = content.replace(
+                        f'attachment:"{filename}"',
+                        f'![{filename}]({res["uri"]})'
+                    )
+                    embedded_ids.append(attachment.id)
+        
+        return content, embedded_ids
 
     def upload_attachment(self, attachment):
         """Download attachment from Redmine and upload it on Zulip
