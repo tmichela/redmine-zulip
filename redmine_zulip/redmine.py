@@ -121,6 +121,7 @@ class Publisher:
             info['subject'] = issue.subject
             info['journals'] = str([])
             info['updated'] = datetime.now()
+            info['description'] = getattr(issue, 'description', '')
 
             log.info(f'INSERT new issue:\n{info}')
 
@@ -158,6 +159,8 @@ class Publisher:
 
         # rename zulip topic if it is still the older formatting
         self.rename_legacy_topic(issue)
+        # rename topic or update description if ticket changed
+        self.edit_issue(issue, ticket)
 
         # check for new journal and attachments: add message per entry
         self._publish_journal(issue, ticket)
@@ -213,16 +216,21 @@ class Publisher:
 
         return atoma.parse_atom_bytes(r.content).entries
 
-    def _publish_issue(self, issue, description):
-        content = (
-            f"**{issue['author']} opened [Issue {issue['title']}]({issue['url']})**\n"
+    @staticmethod
+    def _fmt_issue(author, title, url, description):
+        return (
+            f"**{author} opened [Issue {title}]({url})**\n"
             "```quote\n"
             f"{html2text(description)}\n"
             "```\n"
         )
 
-        self.send(issue, content)
+    def _publish_issue(self, issue, description):
+        content = self._fmt_issue(issue['author'], issue['title'], issue['url'], description)
+
+        msg_id = self.send(issue, content)
         # update database
+        issue['zulip_msg_id'] = msg_id
         self.issues.insert(issue)
 
     def _publish_journal(self, issue, ticket):
@@ -346,6 +354,8 @@ class Publisher:
 
         if reply['result'] != 'success':
             log.info(f'{reply}\ncontent:\n{content}')
+        
+        return reply.get('id')
 
     @lru_cache()
     def zulip_topics(self) -> List[Dict]:
@@ -414,6 +424,38 @@ class Publisher:
         else:
             if resolved_topic := next((t for t in self.zulip_topic_names(unresolved=False) if resolved_topic.startswith(t.rstrip('.'))), None):
                 self._rename_topic(resolved_topic, topic)
+
+    def edit_issue(self, issue, ticket):
+        """
+        Edit an issue in zulip
+        """
+        subject = issue['subject']
+        new_subject = ticket.subject
+        new_description = getattr(ticket, 'description', '')
+
+        def _update_title(_issue):
+            title, title_res = format_topic(_issue)
+            resolved = issue['status_name'] in CLOSED_STATES
+            topic = next((t for t in self.zulip_topic_names(resolved=resolved) if title.startswith(t.rstrip('.'))))
+
+            new_title, new_title_res = format_topic({'subject': new_subject, 'task_id': _issue['task_id']})
+            self._rename_topic(topic, new_title if not resolved else new_title_res)
+
+        if new_subject != subject:
+            _update_title(issue)
+            issue['subject'] = new_subject
+            with self.lock:
+                self.issues.update(issue, ['task_id'])
+
+        if new_description != issue['description']:
+            content = self._fmt_issue(issue['author'], new_subject, issue['url'], new_description)
+            if (msg_id := issue.get('zulip_msg_id')):
+                print(msg_id)
+                self.zulip.update_message({'message_id': msg_id, 'content': content})
+                issue['description'] = new_description
+
+            with self.lock:
+                self.issues.update(issue, ['task_id'])
 
 
 def main(argv=None):
