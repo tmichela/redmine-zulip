@@ -4,6 +4,7 @@ from functools import lru_cache
 from multiprocessing.dummy import Pool
 from pathlib import Path
 from threading import Lock
+from time import sleep
 from typing import Dict, List, Set, Union
 
 import atoma
@@ -149,7 +150,14 @@ class Publisher:
         n, issue = data
 
         # log.debug(f'{n}/{len(self.issues)} - {issue}')
-        ticket = self.redmine.issue.get(issue['task_id'])
+        try:
+            ticket = self.redmine.issue.get(issue['task_id'])
+        except Exception:
+            # ticket not founds, remove from sqlite db
+            log.info(f'Ticket #{issue["task_id"]} not found in redmine, stop tracking', exc_info=True)
+            with self.lock:
+                self.issues.delete(task_id=issue['task_id'])
+            return
 
         # legacy, add issue subject to db
         if 'subject' not in issue or issue['subject'] is None:
@@ -169,7 +177,7 @@ class Publisher:
         except:
             import traceback
             traceback.print_exc()
-    
+
         issue = self._update_status(issue, ticket)
 
         # close ticket
@@ -354,7 +362,13 @@ class Publisher:
 
         if reply['result'] != 'success':
             log.info(f'{reply}\ncontent:\n{content}')
-        
+
+        # if rate limited, wait and retry
+        if reply['result'] == 'error' and reply['code'] == 'RATE_LIMIT_HIT':
+            wait_for = float(reply['retry-after']) + 0.1
+            sleep(wait_for)
+            self.send(issue, content)
+
         return reply.get('id')
 
     @lru_cache()
@@ -447,7 +461,7 @@ class Publisher:
             with self.lock:
                 self.issues.update(issue, ['task_id'])
 
-        if new_description != issue['description']:
+        if new_description != issue.get('description'):
             content = self._fmt_issue(issue['author'], new_subject, issue['url'], new_description)
             if (msg_id := issue.get('zulip_msg_id')):
                 print(msg_id)
