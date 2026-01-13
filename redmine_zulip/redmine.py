@@ -1,5 +1,5 @@
 from argparse import ArgumentParser
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 from multiprocessing.dummy import Pool
 from pathlib import Path
@@ -13,6 +13,7 @@ import dataset
 from html2text import html2text
 from loguru import logger as log
 from redminelib import Redmine
+from redminelib.exceptions import ResourceNotFoundError
 import requests
 import toml
 import zulip
@@ -76,9 +77,14 @@ class Publisher:
         self.feed = conf['REDMINE']['rss_feed']
 
         # options
+        self.discard = 7.0
+        self.remind = 0.0
+        self.missing_grace_days = 3.0
+
         if 'OPTIONS' in conf:
-            self.discard = float(conf['OPTIONS'].get('discard_closed', 7))
-            self.remind = float(conf['OPTIONS'].get('remind_open', 0))
+            self.discard = float(conf['OPTIONS'].get('discard_closed', self.discard))
+            self.remind = float(conf['OPTIONS'].get('remind_open', self.remind))
+            self.missing_grace_days = float(conf['OPTIONS'].get('missing_grace_days', self.missing_grace_days))
 
     def run(self):
         self.poll()
@@ -152,12 +158,69 @@ class Publisher:
         # log.debug(f'{n}/{len(self.issues)} - {issue}')
         try:
             ticket = self.redmine.issue.get(issue['task_id'])
-        except Exception:
-            # ticket not founds, remove from sqlite db
-            log.info(f'Ticket #{issue["task_id"]} not found in redmine, stop tracking', exc_info=True)
-            with self.lock:
-                self.issues.delete(task_id=issue['task_id'])
+        except requests.exceptions.RequestException:
+            log.warning(f'Failed to reach Redmine for ticket #{issue["task_id"]}, will retry later', exc_info=True)
             return
+        except ResourceNotFoundError:
+            now = datetime.now()
+            missing_since = issue.get('missing_since')
+            if isinstance(missing_since, str):
+                try:
+                    missing_since = datetime.fromisoformat(missing_since)
+                except ValueError:
+                    missing_since = None
+
+            raw_attempts = issue.get('missing_attempts') or 0
+            try:
+                attempts = int(raw_attempts) + 1
+            except (TypeError, ValueError):
+                attempts = 1
+
+            if missing_since is None:
+                log.warning(
+                    f'Ticket #{issue["task_id"]} reported missing, starting grace period '
+                    f'({self.missing_grace_days} days) before removal'
+                )
+                data = {
+                    'task_id': issue['task_id'],
+                    'missing_since': now,
+                    'missing_attempts': attempts,
+                }
+                with self.lock:
+                    self.issues.update(data, ['task_id'])
+                return
+
+            if now - missing_since >= timedelta(days=self.missing_grace_days):
+                log.info(
+                    f'Ticket #{issue["task_id"]} missing since {missing_since}, '
+                    'exceeding grace period, stop tracking'
+                )
+                with self.lock:
+                    self.issues.delete(task_id=issue['task_id'])
+                return
+
+            log.info(
+                f'Ticket #{issue["task_id"]} still unreachable, '
+                f'{(now - missing_since).days} day(s) into grace period'
+            )
+            data = {
+                'task_id': issue['task_id'],
+                'missing_attempts': attempts,
+            }
+            with self.lock:
+                self.issues.update(data, ['task_id'])
+            return
+
+        if issue.get('missing_since') or issue.get('missing_attempts'):
+            data = {
+                'task_id': issue['task_id'],
+                'missing_since': None,
+                'missing_attempts': 0,
+            }
+            with self.lock:
+                self.issues.update(data, ['task_id'])
+            issue['missing_since'] = None
+            issue['missing_attempts'] = 0
 
         # legacy, add issue subject to db
         if 'subject' not in issue or issue['subject'] is None:

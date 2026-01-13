@@ -68,4 +68,6 @@ bot = ''
 remind_open = 14  # Days
 # stop tracking closed tasks #days after it's been closed, default 7
 discard_closed = 7  # Days
+# grace window before removing tickets that temporarily 404, default 3
+missing_grace_days = 3  # Days
 ```
