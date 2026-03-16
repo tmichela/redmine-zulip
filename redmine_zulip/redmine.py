@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from multiprocessing.dummy import Pool
 from pathlib import Path
+import re
 from threading import Lock
 from time import sleep
 from typing import Dict, List, Set, Union
@@ -22,6 +23,12 @@ import zulip
 RESOLVED_TOPIC_PREFIX = b'\xe2\x9c\x94 '.decode('utf8')  # = '✔ '
 CLOSED_STATES = ('Closed', 'Resolved', 'Rejected')
 ZULIP_TOPIC_MAX_CHAR = 58  # characters, actually 60 but we leave 2 extra for resolving the topic
+ATTACHMENT_MARKER_RE = re.compile(
+    r'attachment:\s*(?:"([^"]+)"|\'([^\']+)\'|([^\s\)]+))'
+)
+IMAGE_EXTENSIONS = {
+    '.bmp', '.gif', '.jpg', '.jpeg', '.png', '.svg', '.tif', '.tiff', '.webp'
+}
 
 
 def format_topic_legacy(issue):
@@ -121,21 +128,21 @@ class Publisher:
                 'author': issue.authors[0].name,
                 'title': issue.title.value,
             }
-            issue = self.redmine.issue.get(info['task_id'])
-            assert issue.id == info['task_id']
-            info['status_name'] = issue.status.name
-            info['status_id'] = issue.status.id
-            info['subject'] = issue.subject
+            ticket = self.redmine.issue.get(info['task_id'])
+            assert ticket.id == info['task_id']
+            info['status_name'] = ticket.status.name
+            info['status_id'] = ticket.status.id
+            info['subject'] = ticket.subject
             info['journals'] = str([])
             info['updated'] = datetime.now()
-            info['description'] = getattr(issue, 'description', '')
+            info['description'] = getattr(ticket, 'description', '')
 
             log.info(f'INSERT new issue:\n{info}')
 
             # write issue (+ journals) to zulip
-            self._publish_issue(info, issue.description)
-            self._publish_journal(info, issue)
-            self._publish_attachment(info, issue)
+            self._publish_issue(info, ticket)
+            self._publish_journal(info, ticket)
+            self._publish_attachment(info, ticket)
 
         log.info(f'Found {new_issues} new issues')
 
@@ -287,17 +294,75 @@ class Publisher:
 
         return atoma.parse_atom_bytes(r.content).entries
 
-    @staticmethod
-    def _fmt_issue(author, title, url, description):
+    def _is_image_attachment(self, attachment) -> bool:
+        content_type = getattr(attachment, 'content_type', None)
+        if content_type:
+            return 'image' in content_type
+
+        filename = getattr(attachment, 'filename', '')
+        ext = Path(filename).suffix.lower()
+        return ext in IMAGE_EXTENSIONS
+
+    def _embed_attachments_in_text(self, text, attachments):
+        if not text or not attachments:
+            return text, set()
+
+        attachments_by_name = {
+            attachment.filename: attachment
+            for attachment in attachments
+            if hasattr(attachment, 'filename')
+        }
+        embedded_ids = set()
+        uri_cache = {}
+
+        def replacer(match):
+            filename = next(group for group in match.groups() if group)
+            attachment = attachments_by_name.get(filename)
+            if attachment is None:
+                return match.group(0)
+            if not self._is_image_attachment(attachment):
+                return match.group(0)
+
+            if attachment.id not in uri_cache:
+                res = self.upload_attachment(attachment)
+                uri = res.get('uri')
+                if not uri:
+                    return match.group(0)
+                uri_cache[attachment.id] = uri
+
+            embedded_ids.add(attachment.id)
+            uri = uri_cache[attachment.id]
+            return f'![{filename}]({uri})'
+
+        return ATTACHMENT_MARKER_RE.sub(replacer, text), embedded_ids
+
+    def _fmt_issue(self, author, title, url, description, attachments=None):
+        description_text = html2text(description or '', bodywidth=False)
+        embedded_ids = set()
+        if attachments:
+            description_text, embedded_ids = self._embed_attachments_in_text(
+                description_text, attachments
+            )
         return (
             f"**{author} opened [Issue {title}]({url})**\n"
             "```quote\n"
-            f"{html2text(description)}\n"
+            f"{description_text}\n"
             "```\n"
+        ), embedded_ids
+
+    def _publish_issue(self, issue, ticket):
+        known_attachments = set(eval(issue.get('attachments', '[]') or '[]'))
+        content, embedded_ids = self._fmt_issue(
+            issue['author'],
+            issue['title'],
+            issue['url'],
+            getattr(ticket, 'description', ''),
+            attachments=getattr(ticket, 'attachments', None),
         )
 
-    def _publish_issue(self, issue, description):
-        content = self._fmt_issue(issue['author'], issue['title'], issue['url'], description)
+        if embedded_ids:
+            known_attachments.update(embedded_ids)
+            issue['attachments'] = str([e for e in sorted(known_attachments)])
 
         msg_id = self.send(issue, content)
         # update database
@@ -306,7 +371,9 @@ class Publisher:
 
     def _publish_journal(self, issue, ticket):
         known_entries = eval(issue.get('journals', '[]') or '[]')
+        known_attachments = set(eval(issue.get('attachments', '[]') or '[]'))
         new_entries = []
+        embedded_attachments = set()
         for journal in ticket.journals:
             if journal.id in known_entries:
                 continue
@@ -316,9 +383,16 @@ class Publisher:
                 continue
 
             url = f'{self.redmine.url}/issues/{issue["task_id"]}#change-{journal.id}'
+            notes_text = html2text(journal.notes, bodywidth=False)
+            notes_text, embedded_ids = self._embed_attachments_in_text(
+                notes_text, getattr(ticket, 'attachments', None)
+            )
+            if embedded_ids:
+                embedded_attachments.update(embedded_ids)
+                known_attachments.update(embedded_ids)
             msg = (
                 f'**{journal.user.name}** [said]({url}):\n'
-                f'```quote\n{html2text(journal.notes)}\n```'
+                f'```quote\n{notes_text}\n```'
             )
             self.send(issue, msg)
 
@@ -335,6 +409,9 @@ class Publisher:
             'journals': str([e for e in sorted(known_entries)]),
             'updated': datetime.now()
         }
+        if embedded_attachments:
+            issue['attachments'] = str([e for e in sorted(known_attachments)])
+            data['attachments'] = issue['attachments']
         with self.lock:
             self.issues.update(data, ['task_id'])
 
@@ -525,7 +602,17 @@ class Publisher:
                 self.issues.update(issue, ['task_id'])
 
         if new_description != issue.get('description'):
-            content = self._fmt_issue(issue['author'], new_subject, issue['url'], new_description)
+            known_attachments = set(eval(issue.get('attachments', '[]') or '[]'))
+            content, embedded_ids = self._fmt_issue(
+                issue['author'],
+                new_subject,
+                issue['url'],
+                new_description,
+                attachments=getattr(ticket, 'attachments', None),
+            )
+            if embedded_ids:
+                known_attachments.update(embedded_ids)
+                issue['attachments'] = str([e for e in sorted(known_attachments)])
             if (msg_id := issue.get('zulip_msg_id')):
                 print(msg_id)
                 self.zulip.update_message({'message_id': msg_id, 'content': content})
