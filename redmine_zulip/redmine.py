@@ -337,7 +337,7 @@ class Publisher:
         return ATTACHMENT_MARKER_RE.sub(replacer, text), embedded_ids
 
     def _fmt_issue(self, author, title, url, description, attachments=None):
-        description_text = html2text(description or '')
+        description_text = html2text(description or '', bodywidth=False)
         embedded_ids = set()
         if attachments:
             description_text, embedded_ids = self._embed_attachments_in_text(
@@ -383,7 +383,7 @@ class Publisher:
                 continue
 
             url = f'{self.redmine.url}/issues/{issue["task_id"]}#change-{journal.id}'
-            notes_text = html2text(journal.notes)
+            notes_text = html2text(journal.notes, bodywidth=False)
             notes_text, embedded_ids = self._embed_attachments_in_text(
                 notes_text, getattr(ticket, 'attachments', None)
             )
