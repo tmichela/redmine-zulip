@@ -54,6 +54,8 @@ retention = '6 months'
 url = 'https://in.xfel.eu/redmine'
 # redmine access token
 token = ''
+# redmine rss access key (used to populate key= in rss_feed)
+rss_key = ''
 # redmine rss feed for new tasks
 rss_feed = ''
 

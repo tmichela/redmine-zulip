@@ -1,12 +1,14 @@
 from argparse import ArgumentParser
 from datetime import datetime, timedelta
 from functools import lru_cache
+from html import unescape
 from multiprocessing.dummy import Pool
 from pathlib import Path
 import re
 from threading import Lock
 from time import sleep
 from typing import Dict, List, Set, Union
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 import atoma
 from atoma.atom import AtomEntry
@@ -23,18 +25,16 @@ import zulip
 RESOLVED_TOPIC_PREFIX = b'\xe2\x9c\x94 '.decode('utf8')  # = '✔ '
 CLOSED_STATES = ('Closed', 'Resolved', 'Rejected')
 ZULIP_TOPIC_MAX_CHAR = 58  # characters, actually 60 but we leave 2 extra for resolving the topic
-ATTACHMENT_MARKER_RE = re.compile(
-    r'attachment:\s*(?:"([^"]+)"|\'([^\']+)\'|([^\s\)]+))'
-)
-IMAGE_EXTENSIONS = {
-    '.bmp', '.gif', '.jpg', '.jpeg', '.png', '.svg', '.tif', '.tiff', '.webp'
-}
+ATTACHMENT_MARKER_RE = re.compile(r'attachment:\s*(?:"([^"]+)"|\'([^\']+)\'|([^\s\)]+))')
+IMAGE_EXTENSIONS = {'.bmp', '.gif', '.jpg', '.jpeg', '.png', '.svg', '.tif', '.tiff', '.webp'}
+FEED_REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 
 def format_topic_legacy(issue):
     topic = f'Issue #{issue["task_id"]} - {issue["status_name"]}'
     resolved_topic = f'{RESOLVED_TOPIC_PREFIX}{topic}'
     return topic, resolved_topic
+
 
 # TODO fix all existing topic with too long subject
 def format_topic(issue):
@@ -81,6 +81,8 @@ class Publisher:
             key=conf['REDMINE']['token'],
             version=conf['REDMINE'].get('version', '5.0.0')
         )
+        self.redmine_api_key = conf['REDMINE'].get('token')
+        self.redmine_rss_key = conf['REDMINE'].get('rss_key')
         self.feed = conf['REDMINE']['rss_feed']
 
         # options
@@ -287,12 +289,48 @@ class Publisher:
 
     def _get_feed(self) -> List[AtomEntry]:
         """Get issues from rss url"""
-        r = requests.get(self.feed)
+        feed_url = unescape(self.feed)
+        if self.redmine_rss_key:
+            parts = urlsplit(feed_url)
+            query = parse_qs(parts.query, keep_blank_values=True)
+            query['key'] = [self.redmine_rss_key]
+            feed_url = urlunsplit((
+                parts.scheme,
+                parts.netloc,
+                parts.path,
+                urlencode(query, doseq=True),
+                parts.fragment,
+            ))
+        headers = dict(FEED_REQUEST_HEADERS)
+        if self.redmine_api_key:
+            headers['X-Redmine-API-Key'] = self.redmine_api_key
+        try:
+            r = requests.get(feed_url, headers=headers, timeout=30)
+        except requests.RequestException:
+            log.warning(
+                f'Failed to reach Redmine feed url: {feed_url}',
+                exc_info=True,
+            )
+            return []
         if r.status_code != requests.codes.ok:
-            log.debug(f'{r.status_code} Error: {r.reason} for url: {self.feed}')
+            log.debug(f'{r.status_code} Error: {r.reason} for url: {feed_url}')
             return []
 
-        return atoma.parse_atom_bytes(r.content).entries
+        try:
+            return atoma.parse_atom_bytes(r.content).entries
+        except Exception:
+            content_type = r.headers.get('Content-Type', '')
+            if 'text/html' in content_type.lower():
+                log.warning(
+                    'Received HTML from feed endpoint; authentication may be required '
+                    'or the feed URL may be HTML-escaped.',
+                )
+            log.warning(
+                'Failed to parse feed as Atom '
+                f'(status={r.status_code}, content-type={content_type})',
+                exc_info=True,
+            )
+            return []
 
     def _is_image_attachment(self, attachment) -> bool:
         content_type = getattr(attachment, 'content_type', None)
